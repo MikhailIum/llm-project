@@ -5,7 +5,7 @@ import networkx as nx
 
 from assistant.infra.grounding import code_type, find_codes, find_names
 from assistant.infra.llm import LLMClient
-from assistant.infra.schemas import Answer, KnowledgeBase
+from assistant.infra.schemas import Answer, KnowledgeBase, MAP_SCHEMA
 
 
 def local_search(question: str, kb: KnowledgeBase, llm: LLMClient) -> Answer:
@@ -82,7 +82,12 @@ def local_search(question: str, kb: KnowledgeBase, llm: LLMClient) -> Answer:
                 "content": (
                     "Отвечай на вопрос только по приведённым фактам графа. "
                     "Не добавляй сведения из внешних знаний. "
-                    "Если факты содержат цепочку REPLACED_BY, укажи последнюю деталь этой цепочки."
+                    "Ответь прямо на то, о чём спрашивают: если нужен код детали, назови код; "
+                    "если поставщик — назови поставщика; если регламент — назови его код. "
+                    "Для вопроса о текущей детали пройди всю цепочку REPLACED_BY до последней детали. "
+                    "Если спрашивают поставщика текущей детали, используй связь SUPPLIED_BY именно "
+                    "для последней детали цепочки. Не подменяй связь наличия детали с моделью "
+                    "связью FAILED (отказа)."
                 ),
             },
             {"role": "user", "content": f"Вопрос: {question}\n\nФакты:\n{facts_text}"},
@@ -100,15 +105,19 @@ def global_search(question: str, kb: KnowledgeBase, llm: LLMClient) -> Answer:
     Если таких ответов нет, возвращается `Answer(..., refused=True)`.
     """
     part_answers = []
+    sources = set()
     for community in kb.communities:
         response = llm.chat(
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "Оцени, помогает ли сводка ответить на вопрос. Верни JSON с полями "
-                        "answer (краткий ответ только по сводке) и score (целое число от 0 до 10). "
-                        "Если сводка не помогает, поставь score 0."
+                        "Ответь на вопрос только фактами, которые явно есть в этой сводке. "
+                        "Верни JSON с полями answer (короткий ответ) и score (целое число от 0 до 10). "
+                        "Поставь score 0, если сводка не отвечает на вопрос или не относится "
+                        "к указанной в вопросе линейке/модели. Не считай общий вес сущности "
+                        "частотой отказов: сравнивать частоту можно только по явно указанным "
+                        "связям FAILED в нужной линейке. Не объединяй факты разных линеек."
                     ),
                 },
                 {
@@ -129,7 +138,10 @@ def global_search(question: str, kb: KnowledgeBase, llm: LLMClient) -> Answer:
         if (not isinstance(answer, str) or not answer.strip() or not isinstance(score, int) or isinstance(score, bool) or not 0 <= score <= 10):
             continue
         if score > 0:
-            part_answers.append(answer.strip())
+            part_answers.append(f"Сообщество {community.community_id}: {answer.strip()}")
+            for node in community.nodes:
+                for source in kb.graph.nodes[node].get("sources", []):
+                    sources.add(source.split("#", 1)[0])
 
     if not part_answers:
         return Answer("В графе знаний не найдено достаточно фактов для ответа.", refused=True)
@@ -150,4 +162,4 @@ def global_search(question: str, kb: KnowledgeBase, llm: LLMClient) -> Answer:
             },
         ]
     )
-    return Answer(response.content)
+    return Answer(response.content, sources=sources)

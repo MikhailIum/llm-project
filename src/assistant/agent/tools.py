@@ -5,7 +5,7 @@ from collections.abc import Callable
 
 from assistant.graphrag.search import global_search, local_search
 from assistant.infra.erp_client import ErpClient, ErpNotFound, ErpRejected
-from assistant.infra.grounding import normalize_code
+from assistant.infra.grounding import normalize_code, code_type
 from assistant.infra.llm import LLMClient
 from assistant.infra.schemas import KnowledgeBase
 
@@ -88,10 +88,18 @@ def build_tools(kb: KnowledgeBase, llm: LLMClient, erp: ErpClient) -> dict[str, 
         answer = global_search(question, kb, llm)
         return {"answer": answer.text, "sources": answer.sources, "refused": answer.refused}
 
-    def check_stock(part_id, warehouse):
+    def validated_part_id(part_id):
         part_id = normalize_code(part_id)
-        if part_id is None or not re.compile(r"^P-\d{4}[A-Za-z]?$").fullmatch(part_id):
-            return {"error": "Некорректный номер детали"}
+        if part_id is None or code_type(part_id) != "Part":
+            return None, "Некорректный номер детали: ожидается код вида P-..."
+        if f"Part:{part_id}" not in kb.graph:
+            return None, f"Деталь {part_id} отсутствует в графе знаний"
+        return part_id, None
+
+    def check_stock(part_id, warehouse):
+        part_id, error = validated_part_id(part_id)
+        if error:
+            return {"error": error}
 
         if warehouse not in WAREHOUSES:
             return {"error": "Неизвестный склад"}
@@ -105,9 +113,9 @@ def build_tools(kb: KnowledgeBase, llm: LLMClient, erp: ErpClient) -> dict[str, 
                 return {"error": f"операция отклонена ERP: {e}"}
 
     def get_price(part_id):
-        part_id = normalize_code(part_id)
-        if part_id is None or not re.compile(r"^P-\d{4}[A-Za-z]?$").fullmatch(part_id):
-            return {"error": "Некорректный номер детали"}
+        part_id, error = validated_part_id(part_id)
+        if error:
+            return {"error": error}
 
         try:
             return erp.get_price(part_id)
@@ -118,18 +126,22 @@ def build_tools(kb: KnowledgeBase, llm: LLMClient, erp: ErpClient) -> dict[str, 
                 return {"error": f"операция отклонена ERP: {e}"}
 
     def create_service_order(part_id, warehouse, qty, model):
-        part_id = normalize_code(part_id)
-        if part_id is None or not re.compile(r"^P-\d{4}[A-Za-z]?$").fullmatch(part_id):
-            return {"error": "Некорректный номер детали"}
+        part_id, error = validated_part_id(part_id)
+        if error:
+            return {"error": error}
 
         if warehouse not in WAREHOUSES:
             return {"error": "Неизвестный склад"}
-        
-        if qty <= 0:
+
+        model_code = normalize_code(model) if isinstance(model, str) else None
+        if model_code is None or code_type(model_code) != "Model" or f"Model:{model_code}" not in kb.graph:
+            return {"error": f"Модель {model} отсутствует в графе знаний"}
+
+        if not isinstance(qty, int) or isinstance(qty, bool) or qty <= 0:
             return {"error": "Количество должно быть больше нуля"}
 
         try:
-            return erp.create_order(part_id, warehouse, qty, model)
+            return erp.create_order(part_id, warehouse, qty, model_code)
         except (ErpNotFound, ErpRejected) as e:
             if isinstance(e, ErpNotFound):
                 return {"error": f"данные не найдены: {e}"}

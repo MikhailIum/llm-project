@@ -7,10 +7,9 @@ from collections.abc import Callable
 from assistant.agent.tools import TOOL_SCHEMAS
 from assistant.infra.erp_client import ErpUnavailable
 from assistant.infra.evaluation import fabricated_facts
-from assistant.infra.grounding import find_codes, normalize_code
+from assistant.infra.grounding import find_codes, normalize_code, code_type
 from assistant.infra.llm import LLMClient, tool_message
 from assistant.infra.schemas import AgentResult, ToolStep
-
 
 def get_previous_codes(steps):
     codes = set()
@@ -50,7 +49,22 @@ def run_agent(
     и `pending_action`. Перед выдачей ответа коды, цены и остатки сверяются с вопросом
     и результатами инструментов.
     """
-    messages = [{"role": "user", "content": question}]
+    messages = [{"role": "system", "content": 
+                     "Ты ассистент сервисной службы. Следуй правилам выбора инструментов:\n"
+    "1. Для конкретных фактов о кодах ошибок, моделях, деталях, заменах, поставщиках "
+    "и регламентах сначала вызывай search_knowledge. Не отвечай на такие вопросы по памяти "
+    "или без результата поиска.\n"
+    "2. Для обзорных вопросов о сообществах, частотах, сравнении моделей и тенденциях "
+    "вызывай summarize_topic.\n"
+    "3. Для цены вызывай get_price, для остатка на складе — check_stock. Перед этим "
+    "получи и проверь код детали из вопроса или результата search_knowledge; передавай "
+    "только код детали P-..., не код ошибки или модели.\n"
+    "4. Вызывай create_service_order только если пользователь явно просит оформить заказ. "
+    "Сначала найди актуальный код детали через search_knowledge; используй только код типа "
+    "Part, известную модель, названные пользователем склад и количество. Не угадывай значения.\n"
+    "5. Если поиск отказал или не нашёл нужных фактов, не вызывай ERP и честно сообщи, "
+    "что данных недостаточно. Отвечай по-русски и только на основании вопроса и результатов инструментов."
+    }, {"role": "user", "content": question}]
     steps = []
     refused_by_knowledge = False
     cached_results = {}
@@ -117,6 +131,11 @@ def run_agent(
             if call.name in {"check_stock", "get_price", "create_service_order"}:
                 raw_part_id = args.get("part_id")
                 part_id = normalize_code(raw_part_id) if isinstance(raw_part_id, str) else None
+                if part_id is None or code_type(part_id) != "Part":
+                    error = f"ERP принимает только корректный код детали вида P-..., получено: {raw_part_id}"
+                    steps.append(ToolStep(call.name, args, error=error))
+                    messages.append(tool_message(call, {"error": error}))
+                    continue
                 previous_codes = get_previous_codes(steps)
                 if part_id is None or part_id not in set(find_codes(question)) and part_id not in previous_codes:
                     error = (

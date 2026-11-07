@@ -63,10 +63,16 @@ def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
             "content": (
                 "Ты - система извлечения сущностей и отношений из технической документации.\n\n"
 
-                "Извлекай только явно упомянутые сущности и связи.\n"
-                "Не додумывай факты и не используй внешние знания.\n\n"
+                "Извлекай все сущности и связи, подтверждённые текстом. "
+                "Связь может быть выражена прямо или следовать из структуры списка "
+                "и однозначной формулировки; не требуй, чтобы тип связи был назван буквально.\n"
+                "Не используй внешние знания и не добавляй связи между сущностями, "
+                "которые текст не связывает.\n\n"
 
                 f"Допустимые типы сущностей: {entity_types}.\n\n"
+
+                "Procedure — это только код регламента вида SP-101. "
+                "Шаги и инструкции, например «отключить оборудование», не являются сущностями.\n\n"
 
                 "Допустимые типы связей и направление:\n"
                 f"{relations}\n\n"
@@ -75,16 +81,40 @@ def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
                 "subject - источник, object - цель.\n\n"
 
                 "Правила:\n"
-                "1. Не создавай сущности, отсутствующие в тексте.\n"
-                "2. Не создавай связи, которые нельзя подтвердить текстом.\n"
-                "3. Типы subject и object должны соответствовать "
-                "сигнатуре связи.\n"
-                "4. Если информация неоднозначна, не создавай связь.\n"
-                "5. Не меняй направление связи.\n"
-                "6. Возвращай JSON строго по заданной схеме."
-                "Пример: «Деталь P-1042 — пусковое реле. Вместо неё устанавливается P-1042B» "
-                "даёт сущности Part:P-1042, Component:пусковое реле, Part:P-1042B "
-                "и связи P-1042 IS_A пусковое реле, P-1042 REPLACED_BY P-1042B."
+                "1. Не создавай сущности, отсутствующие в тексте или словаре.\n"
+                "2. Извлекай все связи, которые прямо сказаны или однозначно следуют "
+                "из текста; не добавляй связи по внешним знаниям.\n"
+                "3. Для каждой позиции списка учитывай общий контекст перед списком, "
+                "например модель, в которой установлены перечисленные детали.\n"
+                "4. Типы subject и object должны соответствовать сигнатуре связи.\n"
+                "5. Если связь неоднозначна или текст не связывает сущности, пропусти её.\n"
+                "6. Не меняй направление связи.\n"
+                "7. Возвращай JSON строго по заданной схеме.\n\n"
+                "Примеры извлечения:\n"
+                "А) В manual_AR-220.md сказано: «AR-220 входит в линейку „Арктика“. "
+                "В AR-220 установлены следующие узлы: компрессор — "
+                "деталь P-1010, поставщик „КомпрессорМаш“» подтверждает:\n"
+                "- Model:AR-220 -BELONGS_TO-> ProductLine:Арктика\n"
+                "- Model:AR-220 -HAS_PART-> Part:P-1010\n"
+                "- Part:P-1010 -IS_A-> Component:компрессор\n"
+                "- Part:P-1010 -SUPPLIED_BY-> Supplier:КомпрессорМаш\n"
+                "Связь HAS_PART извлекается из общего контекста «в AR-220 установлены», "
+                "а IS_A и SUPPLIED_BY — из описания этой позиции списка.\n"
+                "Б) В manual_AR-220.md сказано: «E-18 — нет обдува испарителя, "
+                "отказ узла „вентилятор испарителя“». Это подтверждает "
+                "ErrorCode:E-18 -INDICATES-> Component:вентилятор испарителя.\n"
+                "В) В procedure_SP-102.md сказано: «Регламент SP-102 применяется "
+                "при ошибке E-12». Это подтверждает "
+                "ErrorCode:E-12 -FIXED_BY-> Procedure:SP-102.\n"
+                "Г) В report_R-2025-005.md оборудование BZ110, указан код E-18, "
+                "а диагностика показала отказ узла «вентилятор испарителя». "
+                "Это подтверждает Model:BZ-110 -FAILED-> "
+                "Component:вентилятор испарителя.\n"
+                "Д) В bulletin_SB-2025-01.md сказано: «Деталь P-1046 "
+                "(вентилятор испарителя) снята с производства. Вместо неё "
+                "устанавливается P-1046B». Это подтверждает "
+                "Part:P-1046 -IS_A-> Component:вентилятор испарителя и "
+                "Part:P-1046 -REPLACED_BY-> Part:P-1046B."
             ),
         },
         {
@@ -98,7 +128,7 @@ def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
     result = ExtractionResult(chunk.chunk_id, chunk.doc_id)
     for attempt in range(2):
         try:
-            llm_answer = llm.chat(messages=messages, json_schema=EXTRACTION_SCHEMA)
+            llm_answer = llm.chat(messages=messages, json_schema=EXTRACTION_SCHEMA, max_tokens=4096)
             entities, relations = parse(llm_answer.content)
             break
         except Exception as e:
@@ -136,10 +166,14 @@ def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
             result.dropped += 1
             continue
 
+        relation = Relation(sub, relation.type, obj)
+        if not relation.matches_schema():
+            result.dropped += 1
+            continue
+
         result_entities.add(sub)
         result_entities.add(obj)
-
-        result_relations.add(Relation(sub, relation.type, obj))
+        result_relations.add(relation)
 
     result.entities = list(result_entities)
     result.relations = list(result_relations)

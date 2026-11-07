@@ -29,7 +29,7 @@ def get_sources(steps):
         if not step.error:
             step_sources = step.result.get("sources", [])
             sources.update(step_sources)
-    return sources
+    return list(sources)
 
 
 def run_agent(

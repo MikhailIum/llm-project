@@ -162,4 +162,4 @@ def global_search(question: str, kb: KnowledgeBase, llm: LLMClient) -> Answer:
             },
         ]
     )
-    return Answer(response.content, sources=sources)
+    return Answer(response.content, sources=list(sources))

@@ -1,11 +1,20 @@
 """Извлечение сущностей и связей из чанка. Требование FR-1."""
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from assistant.infra.config import vocabulary
 from assistant.infra.grounding import canonical_name, find_codes, find_names
 from assistant.infra.llm import LLMClient
-from assistant.infra.schemas import Chunk, Entity, Relation, ExtractionResult, EXTRACTION_SCHEMA, ENTITY_TYPES, RELATION_SIGNATURES
+from assistant.infra.schemas import (
+    ENTITY_TYPES,
+    EXTRACTION_SCHEMA,
+    RELATION_SIGNATURES,
+    Chunk,
+    Entity,
+    ExtractionResult,
+    Relation,
+)
+
 
 class EntitySchema(BaseModel):
     type: str
@@ -26,8 +35,15 @@ def parse(content):
     data = ExtractionSchema.model_validate_json(content)
 
     entities = [Entity(type=e.type, name=e.name) for e in data.entities]
-    relations = [Relation(subject=Entity(type=r.subject_type, name=r.subject), type=r.type, object=Entity(type=r.object_type, name=r.object))for r in data.relations]
-    
+    relations = [
+        Relation(
+            subject=Entity(type=r.subject_type, name=r.subject),
+            type=r.type,
+            object=Entity(type=r.object_type, name=r.object),
+        )
+        for r in data.relations
+    ]
+
     return entities, relations
 
 def validate_entity(entity, text):

@@ -7,9 +7,10 @@ from collections.abc import Callable
 from assistant.agent.tools import TOOL_SCHEMAS
 from assistant.infra.erp_client import ErpUnavailable
 from assistant.infra.evaluation import fabricated_facts
-from assistant.infra.grounding import find_codes, normalize_code, code_type
+from assistant.infra.grounding import code_type, find_codes, normalize_code
 from assistant.infra.llm import LLMClient, tool_message
 from assistant.infra.schemas import AgentResult, ToolStep
+
 
 def get_previous_codes(steps):
     codes = set()

@@ -39,7 +39,10 @@ def summarize_community(community: Community, graph: nx.DiGraph, llm: LLMClient)
         relation_weights[attrs["type"]] = relation_weights.get(attrs["type"], 0) + attrs["weight"]
         entity_weights[sub] = entity_weights.get(sub, 0) + attrs["weight"]
         entity_weights[obj] = entity_weights.get(obj, 0) + attrs["weight"]
-        edges.append(f"- {graph.nodes[sub]['name']} -{attrs['type']}-> {graph.nodes[obj]['name']} (вес связи: {attrs['weight']})")
+        edges.append(
+            f"- {graph.nodes[sub]['name']} -{attrs['type']}-> {graph.nodes[obj]['name']} "
+            f"(вес связи: {attrs['weight']})"
+        )
 
     relation_stats = [f"- {relation_type}: {weight}" for relation_type, weight in relation_weights.items()]
     entity_stats = [f"- {graph.nodes[node]['name']}: {weight}" for node, weight in entity_weights.items()]

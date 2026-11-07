@@ -2,7 +2,8 @@
 
 import networkx as nx
 
-from assistant.infra.schemas import ExtractionResult, Entity
+from assistant.infra.schemas import ExtractionResult
+
 
 def add_source(nodes, entity, chunk_id):
     if entity.node_id not in nodes.keys():
@@ -57,7 +58,11 @@ def build_graph(results: list[ExtractionResult]) -> nx.DiGraph:
             obj = relation.object
             sources = edges[(sub.node_id, obj.node_id)]
             weight = len(sources)
-            if relation.type != "REPLACED_BY" or not graph.has_edge(obj.node_id, sub.node_id) or graph.edges[obj.node_id, sub.node_id]["type"] != "REPLACED_BY":
+            if (
+                relation.type != "REPLACED_BY"
+                or not graph.has_edge(obj.node_id, sub.node_id)
+                or graph.edges[obj.node_id, sub.node_id]["type"] != "REPLACED_BY"
+            ):
                 graph.add_edge(sub.node_id, obj.node_id, type=relation.type, weight=weight, sources=sources)
             else:
                 graph.graph["conflicts"] += 1

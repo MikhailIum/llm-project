@@ -1,11 +1,10 @@
 """Инструменты агента. Требование FR-6."""
 
-import re
 from collections.abc import Callable
 
 from assistant.graphrag.search import global_search, local_search
 from assistant.infra.erp_client import ErpClient, ErpNotFound, ErpRejected
-from assistant.infra.grounding import normalize_code, code_type
+from assistant.infra.grounding import code_type, normalize_code
 from assistant.infra.llm import LLMClient
 from assistant.infra.schemas import KnowledgeBase
 

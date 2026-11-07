@@ -1,11 +1,12 @@
 """Два режима поиска по графу. Требования FR-4, FR-5 и FR-10."""
 
 import json
+
 import networkx as nx
 
 from assistant.infra.grounding import code_type, find_codes, find_names
 from assistant.infra.llm import LLMClient
-from assistant.infra.schemas import Answer, KnowledgeBase, MAP_SCHEMA
+from assistant.infra.schemas import MAP_SCHEMA, Answer, KnowledgeBase
 
 
 def local_search(question: str, kb: KnowledgeBase, llm: LLMClient) -> Answer:
@@ -41,7 +42,7 @@ def local_search(question: str, kb: KnowledgeBase, llm: LLMClient) -> Answer:
         for id, start in enumerate(anchors):
             for finish in anchors[id + 1 :]:
                 for path in nx.all_simple_paths(graph.to_undirected(), start, finish, cutoff=3):
-                    for left, right in zip(path, path[1:]):
+                    for left, right in zip(path, path[1:], strict=False):
                         if graph.has_edge(left, right):
                             selected_edges.add((left, right))
                         if graph.has_edge(right, left):
@@ -135,7 +136,13 @@ def global_search(question: str, kb: KnowledgeBase, llm: LLMClient) -> Answer:
             continue
         answer = partial.get("answer")
         score = partial.get("score")
-        if (not isinstance(answer, str) or not answer.strip() or not isinstance(score, int) or isinstance(score, bool) or not 0 <= score <= 10):
+        if (
+            not isinstance(answer, str)
+            or not answer.strip()
+            or not isinstance(score, int)
+            or isinstance(score, bool)
+            or not 0 <= score <= 10
+        ):
             continue
         if score > 0:
             part_answers.append(f"Сообщество {community.community_id}: {answer.strip()}")

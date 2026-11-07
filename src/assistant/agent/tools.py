@@ -1,16 +1,75 @@
 """Инструменты агента. Требование FR-6."""
 
+import re
 from collections.abc import Callable
 
-from assistant.infra.erp_client import ErpClient
+from assistant.graphrag.search import global_search, local_search
+from assistant.infra.erp_client import ErpClient, ErpNotFound, ErpRejected
+from assistant.infra.grounding import normalize_code
 from assistant.infra.llm import LLMClient
 from assistant.infra.schemas import KnowledgeBase
 
 # Описания пяти инструментов в формате function calling:
 # search_knowledge, summarize_topic, check_stock, get_price, create_service_order.
-# TODO: заполните список. У параметра warehouse четыре склада задаются перечислением.
-TOOL_SCHEMAS: list[dict] = []
 
+WAREHOUSES = ["Москва", "Санкт-Петербург", "Казань", "Новосибирск"]
+
+def function_schema(name, description, properties, required):
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+                "additionalProperties": False,
+            },
+        },
+    }
+
+QUESTION = {"type": "string", "description": "Вопрос пользователя"}
+PART_ID = {"type": "string", "pattern": r"^P-\d{4}[A-Za-z]?$", "description": "Код детали"}
+WAREHOUSE = {"type": "string", "enum": WAREHOUSES}
+
+TOOL_SCHEMAS: list[dict] = [
+    function_schema(
+        "search_knowledge",
+        "Найти конкретные факты в графе знаний по вопросу.",
+        {"question": QUESTION},
+        ["question"],
+    ),
+    function_schema(
+        "summarize_topic",
+        "Ответить на обзорный вопрос по сводкам сообществ графа.",
+        {"question": QUESTION},
+        ["question"],
+    ),
+    function_schema(
+        "check_stock",
+        "Проверить остаток детали на складе.",
+        {"part_id": PART_ID, "warehouse": WAREHOUSE},
+        ["part_id", "warehouse"],
+    ),
+    function_schema(
+        "get_price",
+        "Получить цену детали в рублях.",
+        {"part_id": PART_ID},
+        ["part_id"],
+    ),
+    function_schema(
+        "create_service_order",
+        "Создать заказ на обслуживание для детали и модели.",
+        {
+            "part_id": PART_ID,
+            "warehouse": WAREHOUSE,
+            "qty": {"type": "integer", "minimum": 1},
+            "model": {"type": "string", "minLength": 1},
+        },
+        ["part_id", "warehouse", "qty", "model"],
+    )
+]
 
 def build_tools(kb: KnowledgeBase, llm: LLMClient, erp: ErpClient) -> dict[str, Callable[..., dict]]:
     """Словарь «имя инструмента -> функция». Каждая функция возвращает словарь.
@@ -20,5 +79,67 @@ def build_tools(kb: KnowledgeBase, llm: LLMClient, erp: ErpClient) -> dict[str, 
     `ErpNotFound` и `ErpRejected` превращаются в {"error": "..."} с разным текстом, чтобы исходы
     оставались различимыми. `ErpUnavailable` передаётся дальше: повторы делает агент (FR-8).
     """
-    # TODO: пять функций поверх local_search, global_search и клиента ERP
-    raise NotImplementedError("Реализуйте build_tools")
+
+    def search_knowledge(question):
+        answer = local_search(question, kb, llm)
+        return {"answer": answer.text, "facts": answer.facts, "sources": answer.sources, "refused": answer.refused}
+
+    def summarize_topic(question):
+        answer = global_search(question, kb, llm)
+        return {"answer": answer.text, "sources": answer.sources, "refused": answer.refused}
+
+    def check_stock(part_id, warehouse):
+        part_id = normalize_code(part_id)
+        if part_id is None or not re.compile(r"^P-\d{4}[A-Za-z]?$").fullmatch(part_id):
+            return {"error": "Некорректный номер детали"}
+
+        if warehouse not in WAREHOUSES:
+            return {"error": "Неизвестный склад"}
+
+        try:
+            return erp.get_stock(part_id, warehouse)
+        except (ErpNotFound, ErpRejected) as e:
+            if isinstance(e, ErpNotFound):
+                return {"error": f"данные не найдены: {e}"}
+            else:
+                return {"error": f"операция отклонена ERP: {e}"}
+
+    def get_price(part_id):
+        part_id = normalize_code(part_id)
+        if part_id is None or not re.compile(r"^P-\d{4}[A-Za-z]?$").fullmatch(part_id):
+            return {"error": "Некорректный номер детали"}
+
+        try:
+            return erp.get_price(part_id)
+        except (ErpNotFound, ErpRejected) as e:
+            if isinstance(e, ErpNotFound):
+                return {"error": f"данные не найдены: {e}"}
+            else:
+                return {"error": f"операция отклонена ERP: {e}"}
+
+    def create_service_order(part_id, warehouse, qty, model):
+        part_id = normalize_code(part_id)
+        if part_id is None or not re.compile(r"^P-\d{4}[A-Za-z]?$").fullmatch(part_id):
+            return {"error": "Некорректный номер детали"}
+
+        if warehouse not in WAREHOUSES:
+            return {"error": "Неизвестный склад"}
+        
+        if qty <= 0:
+            return {"error": "Количество должно быть больше нуля"}
+
+        try:
+            return erp.create_order(part_id, warehouse, qty, model)
+        except (ErpNotFound, ErpRejected) as e:
+            if isinstance(e, ErpNotFound):
+                return {"error": f"данные не найдены: {e}"}
+            else:
+                return {"error": f"операция отклонена ERP: {e}"}
+
+    return {
+        "search_knowledge": search_knowledge,
+        "summarize_topic": summarize_topic,
+        "check_stock": check_stock,
+        "get_price": get_price,
+        "create_service_order": create_service_order,
+    }
